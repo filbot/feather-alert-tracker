@@ -13,7 +13,4 @@ RUN npm install --production
 # Copy app source
 COPY . .
 
-# Healthcheck for process liveness (optional)
-HEALTHCHECK CMD pgrep node || exit 1
-
 CMD ["node", "app.js"]
