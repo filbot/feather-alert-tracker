@@ -1,4 +1,3 @@
-// app.js
 import fetch from 'node-fetch';
 
 const BEARER_TOKEN = process.env.X_BEARER_TOKEN;
