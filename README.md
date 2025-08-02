@@ -118,4 +118,4 @@ Feel free to submit issues, feature requests, or pull requests to improve the ap
 
 ## License
 
-This project is open source. Please check the repository for specific license terms.
+This project is open source.
