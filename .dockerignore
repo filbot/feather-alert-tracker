@@ -1,0 +1,56 @@
+# Node modules (will be installed in container)
+node_modules/
+npm-debug.log*
+
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# State and data files (should be in volume)
+.tracker-state.json
+.usage-tracker.json
+data/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+README.md
+*.md
+!package.json
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker files (don't need these inside the image)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Logs
+logs/
+*.log
+
+# Testing
+test/
+tests/
+*.test.js
+*.spec.js
+coverage/
+
+# Temporary files
+tmp/
+temp/
