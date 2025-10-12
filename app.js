@@ -1,36 +1,71 @@
 import fetch from 'node-fetch';
+import fs from 'fs/promises';
+import path from 'path';
 
 const BEARER_TOKEN = process.env.X_BEARER_TOKEN;
 const USER_ID = process.env.USER_ID;
 const TRIGGER_URL = process.env.TRIGGER_URL;
 
+// Validate required environment variables
+if (!BEARER_TOKEN || !USER_ID || !TRIGGER_URL) {
+  console.error('[ERROR] Missing required environment variables:');
+  if (!BEARER_TOKEN) console.error('  - X_BEARER_TOKEN');
+  if (!USER_ID) console.error('  - USER_ID');
+  if (!TRIGGER_URL) console.error('  - TRIGGER_URL');
+  process.exit(1);
+}
+
 // ======== API Limit Calculations ========
 
-// User's limits
-const ALLOWED_POLLS_PER_MONTH = 100;
 const POLLING_START_HOUR = 8;   // 8am
 const POLLING_END_HOUR = 18;    // 6pm (exclusive)
 
-// Calculate daily polling window (in hours)
+// Calculate polling interval
 const POLLING_WINDOW_HOURS = POLLING_END_HOUR - POLLING_START_HOUR; // 10 hours
-const WEEKDAYS_PER_MONTH = 22; // Approximate weekdays in a month (30 days * 5/7 ≈ 21.4, rounded up)
-
-// Total active polling minutes per month (weekdays only)
+const WEEKDAYS_PER_MONTH = 22;
 const ACTIVE_MINUTES_PER_MONTH = POLLING_WINDOW_HOURS * 60 * WEEKDAYS_PER_MONTH;
 
-// Calculate required interval in minutes to stay under cap
-const MINUTES_BETWEEN_POLLS = Math.ceil(ACTIVE_MINUTES_PER_MONTH / ALLOWED_POLLS_PER_MONTH);
+// We'll fetch 1 post per poll, so we can poll up to 100 times per 30 days
+const ALLOWED_POLLS_PER_30_DAYS = 100;
+const MINUTES_BETWEEN_POLLS = Math.ceil(ACTIVE_MINUTES_PER_MONTH / ALLOWED_POLLS_PER_30_DAYS);
 
-// For logging
-console.log(`[CONFIG] Max polls per month: ${ALLOWED_POLLS_PER_MONTH}`);
+// State tracking file
+const STATE_FILE = path.join(process.cwd(), '.tracker-state.json');
+
 console.log(`[CONFIG] Poll window: ${POLLING_START_HOUR}:00 to ${POLLING_END_HOUR}:00 (weekdays only)`);
-console.log(`[CONFIG] Minimum minutes between polls: ${MINUTES_BETWEEN_POLLS}`);
+console.log(`[CONFIG] Minutes between polls: ${MINUTES_BETWEEN_POLLS}`);
+
+// ======== State Management ========
+
+async function loadState() {
+  try {
+    const data = await fs.readFile(STATE_FILE, 'utf-8');
+    const parsed = JSON.parse(data);
+    return { lastSinceId: parsed.lastSinceId || null };
+  } catch {
+    return { lastSinceId: null };
+  }
+}
+
+async function saveState(sinceId) {
+  await fs.writeFile(STATE_FILE, JSON.stringify({ lastSinceId: sinceId }, null, 2));
+}
+
+// Initialize state
+let state = await loadState();
+let sinceId = state.lastSinceId;
+
+if (sinceId) {
+  console.log(`[STARTUP] Resuming from tweet ID: ${sinceId}`);
+} else {
+  console.log(`[STARTUP] Starting fresh - will check most recent tweet`);
+}
 
 // ======== Helper Functions ========
 
 function isWeekday(date = new Date()) {
   const day = date.getDay();
-  return day >= 1 && day <= 5; // Monday (1) to Friday (5)
+  return day >= 1 && day <= 5;
 }
 
 function isWithinPollingHours(date = new Date()) {
@@ -42,18 +77,23 @@ function shouldPoll(date = new Date()) {
   return isWeekday(date) && isWithinPollingHours(date);
 }
 
-let sinceId = null;
+// ========== Fetch Most Recent Tweet ==========
 
-// ========== Fetch Latest ==========
-
-async function fetchLatest() {
+async function fetchMostRecentTweet() {
   const params = new URLSearchParams({
-    max_results: '5', // Minimum allowed by X API
+    max_results: '1', // Only fetch the most recent tweet
     'tweet.fields': 'id,text,created_at',
+    'exclude': 'retweets,replies', // Only original tweets
   });
-  if (sinceId) params.set('since_id', sinceId);
+  
+  if (sinceId) {
+    params.set('since_id', sinceId);
+  }
 
   const url = `https://api.x.com/2/users/${USER_ID}/tweets?${params}`;
+  
+  console.log(`[API] Checking for new tweet...`);
+  
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${BEARER_TOKEN}` },
   });
@@ -61,17 +101,28 @@ async function fetchLatest() {
   if (res.status === 429) {
     const reset = res.headers.get('x-rate-limit-reset');
     const waitMs = Math.max((reset * 1000) - Date.now(), 0);
-    console.warn(`Rate limited. Waiting ${Math.ceil(waitMs / 1000 / 60)} minutes...`);
+    console.warn(`[RATE LIMIT] Rate limited. Waiting ${Math.ceil(waitMs / 1000 / 60)} minutes...`);
     await new Promise((r) => setTimeout(r, waitMs + 1000));
-    return [];
+    return null;
   }
+  
   if (!res.ok) {
-    console.error('Error fetching tweets:', await res.text());
-    return [];
+    const errorText = await res.text();
+    console.error(`[API ERROR] Status ${res.status}:`, errorText);
+    return null;
   }
 
   const data = await res.json();
-  return data.data || [];
+  const tweets = data.data || [];
+  
+  // Log rate limit info for monitoring
+  const remaining = res.headers.get('x-rate-limit-remaining');
+  const limit = res.headers.get('x-rate-limit-limit');
+  if (remaining && limit) {
+    console.log(`[RATE LIMIT] API calls remaining: ${remaining}/${limit}`);
+  }
+  
+  return tweets.length > 0 ? tweets[0] : null;
 }
 
 async function triggerAction(tweet) {
@@ -92,25 +143,34 @@ async function triggerAction(tweet) {
 async function poll() {
   try {
     const now = new Date();
+    
     if (shouldPoll(now)) {
-      const tweets = await fetchLatest();
-      if (tweets.length) {
-        sinceId = tweets[0].id;
-        for (const tweet of tweets.reverse()) {
-          if (tweet.text && tweet.text.toLowerCase().includes('feather alert')) {
-            console.log(`[Feather Alert] ${tweet.id} at ${tweet.created_at}: ${tweet.text}`);
-            await triggerAction(tweet);
-          }
+      const tweet = await fetchMostRecentTweet();
+      
+      if (tweet) {
+        console.log(`[NEW TWEET] ${tweet.id} at ${tweet.created_at}`);
+        console.log(`[CONTENT] ${tweet.text}`);
+        
+        // Check for feather alert
+        if (tweet.text && tweet.text.toLowerCase().includes('feather alert')) {
+          console.log(`[FEATHER ALERT DETECTED] Triggering webhook...`);
+          await triggerAction(tweet);
+        } else {
+          console.log(`[NO MATCH] Tweet does not contain "feather alert"`);
         }
+        
+        // Update sinceId and save state
+        sinceId = tweet.id;
+        await saveState(sinceId);
       } else {
-        console.log(`[${now.toLocaleString()}] No new tweets found.`);
+        console.log(`[${now.toLocaleString()}] No new tweets since last check.`);
       }
     } else {
       const reason = !isWeekday(now) ? "weekend" : "outside polling hours";
-      console.log(`[${now.toLocaleString()}] Not polling (${reason}). Next poll will occur on next weekday at 8am.`);
+      console.log(`[${now.toLocaleString()}] Not polling (${reason}).`);
     }
   } catch (err) {
-    console.error('Polling error:', err);
+    console.error('[POLLING ERROR]', err);
   } finally {
     scheduleNextPoll();
   }
@@ -120,16 +180,16 @@ async function poll() {
 
 function scheduleNextPoll() {
   const now = new Date();
+  
   if (shouldPoll(now)) {
-    // Schedule next poll at MINUTES_BETWEEN_POLLS
+    // Schedule next poll during active hours
     setTimeout(poll, MINUTES_BETWEEN_POLLS * 60 * 1000);
     const nextPoll = new Date(now.getTime() + MINUTES_BETWEEN_POLLS * 60 * 1000);
-    console.log(`[${now.toLocaleString()}] Next poll scheduled for: ${nextPoll.toLocaleString()}`);
+    console.log(`[${now.toLocaleString()}] Next poll: ${nextPoll.toLocaleString()}`);
   } else {
-    // Calculate next valid polling time (next weekday at 8am)
+    // Calculate next valid polling time
     let next = new Date(now);
     
-    // If it's a weekday but outside hours, go to next 8am (same day or next day)
     if (isWeekday(now)) {
       if (now.getHours() < POLLING_START_HOUR) {
         // Same day at 8am
@@ -142,11 +202,11 @@ function scheduleNextPoll() {
     } else {
       // It's weekend, find next Monday at 8am
       next.setHours(POLLING_START_HOUR, 0, 0, 0);
-      const daysUntilMonday = (8 - next.getDay()) % 7 || 7; // If it's Sunday (0), add 1 day. If Saturday (6), add 2 days
+      const daysUntilMonday = (8 - next.getDay()) % 7 || 7;
       next.setDate(next.getDate() + daysUntilMonday);
     }
     
-    // Ensure we don't schedule for a weekend (edge case protection)
+    // Ensure it's a weekday
     while (!isWeekday(next)) {
       next.setDate(next.getDate() + 1);
     }
@@ -161,4 +221,5 @@ function scheduleNextPoll() {
 
 // ======== Start Polling ========
 
+console.log('[STARTUP] Feather Alert Tracker starting...');
 poll();
