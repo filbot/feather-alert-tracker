@@ -81,7 +81,7 @@ function shouldPoll(date = new Date()) {
 
 async function fetchMostRecentTweet() {
   const params = new URLSearchParams({
-    max_results: '1', // Only fetch the most recent tweet
+    max_results: '5', // Minimum allowed by Twitter API (5-100)
     'tweet.fields': 'id,text,created_at',
     'exclude': 'retweets,replies', // Only original tweets
   });
