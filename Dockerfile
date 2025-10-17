@@ -3,9 +3,13 @@ FROM node:20-slim
 # Set NODE_ENV to production
 ENV NODE_ENV=production
 
+# Set timezone to America/Los_Angeles (PST/PDT)
+ENV TZ=America/Los_Angeles
+
 # Update package lists and upgrade system packages to fix vulnerabilities
 RUN apt-get update && \
     apt-get upgrade -y && \
+    apt-get install -y tzdata && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
