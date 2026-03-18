@@ -2,30 +2,19 @@ import fetch from 'node-fetch';
 import fs from 'fs/promises';
 import http from 'http';
 
-const BEARER_TOKEN = process.env.X_BEARER_TOKEN;
-const USER_ID = process.env.USER_ID;
-const TRIGGER_URL = process.env.TRIGGER_URL;
+// ======== Configuration ========
 
-// Validate required environment variables
-if (!BEARER_TOKEN || !USER_ID || !TRIGGER_URL) {
-  console.error('[ERROR] Missing required environment variables:');
-  if (!BEARER_TOKEN) console.error('  - X_BEARER_TOKEN');
-  if (!USER_ID) console.error('  - USER_ID');
-  if (!TRIGGER_URL) console.error('  - TRIGGER_URL');
-  process.exit(1);
+function isConfigured() {
+  return !!(process.env.X_BEARER_TOKEN && process.env.USER_ID && process.env.TRIGGER_URL);
 }
-
-// ======== API Limit Calculations ========
 
 const POLLING_START_HOUR = 8;   // 8am
 const POLLING_END_HOUR = 18;    // 6pm (exclusive)
 
-// Calculate polling interval
 const POLLING_WINDOW_HOURS = POLLING_END_HOUR - POLLING_START_HOUR; // 10 hours
 const WEEKDAYS_PER_MONTH = 22;
 const ACTIVE_MINUTES_PER_MONTH = POLLING_WINDOW_HOURS * 60 * WEEKDAYS_PER_MONTH;
 
-// We'll fetch 1 post per poll, so we can poll up to 100 times per 30 days
 const ALLOWED_POLLS_PER_30_DAYS = 100;
 const MINUTES_BETWEEN_POLLS = Math.ceil(ACTIVE_MINUTES_PER_MONTH / ALLOWED_POLLS_PER_30_DAYS);
 
@@ -33,9 +22,6 @@ const MINUTES_BETWEEN_POLLS = Math.ceil(ACTIVE_MINUTES_PER_MONTH / ALLOWED_POLLS
 const STATE_FILE = process.env.STATE_DIR
   ? `${process.env.STATE_DIR}/.tracker-state.json`
   : '/storage/.tracker-state.json';
-
-console.log(`[CONFIG] Poll window: ${POLLING_START_HOUR}:00 to ${POLLING_END_HOUR}:00 (weekdays only)`);
-console.log(`[CONFIG] Minutes between polls: ${MINUTES_BETWEEN_POLLS}`);
 
 // ======== State Management ========
 
@@ -53,15 +39,7 @@ async function saveState(sinceId) {
   await fs.writeFile(STATE_FILE, JSON.stringify({ lastSinceId: sinceId }, null, 2));
 }
 
-// Initialize state
-let state = await loadState();
-let sinceId = state.lastSinceId;
-
-if (sinceId) {
-  console.log(`[STARTUP] Resuming from tweet ID: ${sinceId}`);
-} else {
-  console.log(`[STARTUP] Starting fresh - will check most recent tweet`);
-}
+let sinceId = null;
 
 // ======== Helper Functions ========
 
@@ -87,17 +65,17 @@ async function fetchMostRecentTweet() {
     'tweet.fields': 'id,text,created_at',
     'exclude': 'retweets,replies', // Only original tweets
   });
-  
+
   if (sinceId) {
     params.set('since_id', sinceId);
   }
 
-  const url = `https://api.x.com/2/users/${USER_ID}/tweets?${params}`;
-  
+  const url = `https://api.x.com/2/users/${process.env.USER_ID}/tweets?${params}`;
+
   console.log(`[API] Checking for new tweet...`);
-  
+
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${BEARER_TOKEN}` },
+    headers: { Authorization: `Bearer ${process.env.X_BEARER_TOKEN}` },
   });
 
   if (res.status === 429) {
@@ -128,15 +106,16 @@ async function fetchMostRecentTweet() {
 }
 
 async function triggerAction(tweet) {
+  const triggerUrl = process.env.TRIGGER_URL;
   try {
-    const res = await fetch(TRIGGER_URL);
+    const res = await fetch(triggerUrl);
     if (res.ok) {
-      console.log(`[TRIGGERED] Successfully sent GET to ${TRIGGER_URL}`);
+      console.log(`[TRIGGERED] Successfully sent GET to ${triggerUrl}`);
     } else {
       console.warn(`[TRIGGER FAILED] Status: ${res.status} - ${res.statusText}`);
     }
   } catch (err) {
-    console.error(`[TRIGGER ERROR] Could not reach ${TRIGGER_URL}:`, err.message);
+    console.error(`[TRIGGER ERROR] Could not reach ${triggerUrl}:`, err.message);
   }
 }
 
@@ -144,8 +123,25 @@ async function triggerAction(tweet) {
 
 async function poll() {
   try {
+    if (!isConfigured()) {
+      console.log(`[${new Date().toLocaleString()}] Waiting for configuration (set X_BEARER_TOKEN, USER_ID, TRIGGER_URL)`);
+      setTimeout(poll, 30 * 1000);
+      return;
+    }
+
+    // Load state on first configured poll
+    if (sinceId === null) {
+      const state = await loadState();
+      sinceId = state.lastSinceId;
+      if (sinceId) {
+        console.log(`[STARTUP] Resuming from tweet ID: ${sinceId}`);
+      }
+      console.log(`[CONFIG] Poll window: ${POLLING_START_HOUR}:00 to ${POLLING_END_HOUR}:00 (weekdays only)`);
+      console.log(`[CONFIG] Minutes between polls: ${MINUTES_BETWEEN_POLLS}`);
+    }
+
     const now = new Date();
-    
+
     if (shouldPoll(now)) {
       const tweet = await fetchMostRecentTweet();
       
@@ -227,8 +223,13 @@ const PORT = process.env.PORT || 80;
 
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/up') {
+    const configured = isConfigured();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      configured,
+      ...(!configured && { message: 'Set X_BEARER_TOKEN, USER_ID, and TRIGGER_URL to activate polling' }),
+    }));
   } else {
     res.writeHead(404);
     res.end();
@@ -239,7 +240,12 @@ server.listen(PORT, () => {
   console.log(`[STARTUP] Healthcheck server listening on port ${PORT}`);
 });
 
-// ======== Start Polling ========
+// ======== Start ========
 
 console.log('[STARTUP] Feather Alert Tracker starting...');
+
+if (!isConfigured()) {
+  console.log('[STARTUP] Not configured - healthcheck is running, waiting for environment variables');
+}
+
 poll();
