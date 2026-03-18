@@ -1,120 +1,69 @@
 # Feather Alert Tracker
 
-A Node.js application that monitors a specific X (formerly Twitter) user's tweets for "feather alert" mentions and triggers a webhook when found.
+A Node.js application that monitors a specific X (formerly Twitter) user's tweets for "feather alert" mentions and triggers a webhook when found. Designed to run on [Once](https://github.com/basecamp/once).
 
-## Purpose
+## How It Works
 
-This application continuously monitors tweets from a specified X user account, looking for posts containing the phrase "feather alert" (case-insensitive). When such a tweet is detected, it automatically sends a GET request to a configured trigger URL, enabling automated responses to specific tweet content.
+1. Polls the X API for new tweets from a configured user during business hours (8 AM - 6 PM, weekdays only)
+2. Checks each tweet for the phrase "feather alert" (case-insensitive)
+3. Triggers a webhook (HTTP GET) when a match is found
+4. Tracks the last processed tweet ID in `/storage` to avoid duplicates across restarts
+5. Exposes a `/up` healthcheck endpoint on port 80
 
-## Features
+Polling intervals are calculated automatically to stay within the X API free tier limit of 100 calls per month (~18 minutes between polls).
 
-- **Smart Polling Schedule**: Only polls during business hours (8 AM - 6 PM local time)
-- **Rate Limit Compliance**: Automatically calculates polling intervals to stay within X API limits
-- **Rate Limit Handling**: Gracefully handles API rate limits with automatic retry logic
-- **Persistent Tracking**: Uses `since_id` to avoid processing duplicate tweets
-- **Webhook Integration**: Triggers external actions via HTTP GET requests
+## Environment Variables
 
-## Limitations
+| Variable | Required | Description |
+|---|---|---|
+| `X_BEARER_TOKEN` | Yes | X API Bearer Token ([get one here](https://developer.twitter.com/)) |
+| `USER_ID` | Yes | X user ID to monitor ([lookup tool](https://tweeterid.com/)) |
+| `TRIGGER_URL` | Yes | Webhook URL that receives a GET request on alert |
+| `TZ` | No | Timezone (default: `America/Los_Angeles`) |
+| `PORT` | No | Healthcheck server port (default: `80`) |
+| `STATE_DIR` | No | Override state file directory (default: `/storage`) |
 
-### API Constraints
-- **Monthly Poll Limit**: Maximum of 100 API calls per month to stay within free tier limits
-- **Polling Window**: Only active between 8 AM and 6 PM local time (10 hours daily)
-- **Minimum Interval**: Approximately 18 minutes between polls (calculated automatically)
-- **Tweet Volume**: Fetches maximum 5 tweets per poll (X API minimum)
+When running on Once, configure these through the Once settings UI.
 
-### Technical Limitations
-- Requires continuous running to maintain monitoring
-- Dependent on X API availability and rate limits
-- Single user monitoring only
-- Simple keyword matching (exact phrase "feather alert")
+## Docker
 
-## Setup
+Multi-platform images (amd64, arm64, arm/v7) are published to GHCR on every push to `main`:
 
-### Prerequisites
-- Node.js (ES modules support required)
-- X (Twitter) API Bearer Token with read access
-- Target webhook/trigger URL
-
-### Installation
-
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   npm install node-fetch
-   ```
-
-3. Create a `.env` file with the required environment variables (see below)
-
-4. Run the application:
-   ```bash
-   node app.js
-   ```
-
-## Required Environment Variables
-
-Create a `.env` file in the project root with the following variables:
-
-```env
-# X (Twitter) API Bearer Token
-# Obtain from https://developer.twitter.com/en/portal/dashboard
-X_BEARER_TOKEN=your_bearer_token_here
-
-# X User ID to monitor
-# Find using tools like https://tweeterid.com/ or X API
-USER_ID=123456789
-
-# Webhook URL to trigger when "feather alert" is found
-# This will receive a GET request when alerts are detected
-TRIGGER_URL=https://your-webhook-endpoint.com/alert
+```
+ghcr.io/<owner>/feather-alert-tracker:latest
 ```
 
-### How to Get Required Information
-
-1. **X_BEARER_TOKEN**: 
-   - Create a developer account at https://developer.twitter.com/
-   - Create a new app and generate a Bearer Token
-   - Ensure the app has read permissions for tweets
-
-2. **USER_ID**: 
-   - Use online tools like https://tweeterid.com/
-   - Or use the X API to convert username to user ID
-
-3. **TRIGGER_URL**: 
-   - Any HTTP endpoint that can receive GET requests
-   - Could be a webhook service, your own API, or automation platform
-
-## Usage
-
-Once configured and running, the application will:
-
-1. Start polling immediately if within business hours (8 AM - 6 PM)
-2. Wait until the next business day if started outside polling hours
-3. Check for new tweets every ~18 minutes during active hours
-4. Log all activity with timestamps
-5. Trigger the webhook URL when "feather alert" tweets are found
-6. Automatically handle rate limits and scheduling
-
-## Monitoring
-
-The application provides detailed console logging:
-- Configuration settings on startup
-- Polling schedule and timing
-- Tweet detection and webhook triggers
-- Rate limit handling
-- Error messages and warnings
-
-## Docker Support
-
-A Dockerfile is included for containerized deployment. Build and run with:
+### Run locally
 
 ```bash
-docker build -t feather-alert-tracker .
-docker run --env-file .env feather-alert-tracker
+docker run -p 80:80 \
+  -e X_BEARER_TOKEN=your_token \
+  -e USER_ID=123456789 \
+  -e TRIGGER_URL=https://your-webhook.com/alert \
+  -v feather-storage:/storage \
+  ghcr.io/<owner>/feather-alert-tracker:latest
 ```
 
-## Contributing
+### Build locally
 
-Feel free to submit issues, feature requests, or pull requests to improve the application.
+```bash
+docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 -t feather-alert-tracker .
+```
+
+## Once Compatibility
+
+The app follows Once conventions:
+- Serves HTTP on port 80 with a `GET /up` healthcheck
+- Persists state to `/storage` (backed up automatically by Once)
+- Configured via environment variables
+- Runs as a non-root user
+
+## Development
+
+```bash
+npm install
+STATE_DIR=. PORT=3000 X_BEARER_TOKEN=... USER_ID=... TRIGGER_URL=... node app.js
+```
 
 ## License
 
