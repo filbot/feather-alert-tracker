@@ -13,15 +13,12 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user to run the app
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
 WORKDIR /app
 
 # Copy package files first (better layer caching)
 COPY package*.json ./
 
-# Install dependencies as root (needed for some packages)
+# Install dependencies
 RUN npm ci --only=production && \
     npm cache clean --force
 
@@ -29,11 +26,7 @@ RUN npm ci --only=production && \
 COPY . .
 
 # Create /storage directory for persistent state (Once convention)
-RUN mkdir -p /storage && \
-    chown -R appuser:appuser /app /storage
-
-# Switch to non-root user
-USER appuser
+RUN mkdir -p /storage
 
 # Once expects persistent data in /storage
 VOLUME ["/storage"]
