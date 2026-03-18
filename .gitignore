@@ -21,6 +21,7 @@ data/
 *.swo
 *~
 .DS_Store
+.claude
 
 # Logs
 logs/

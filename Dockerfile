@@ -28,14 +28,21 @@ RUN npm ci --only=production && \
 # Copy app source
 COPY . .
 
-# Create directory for state file with proper permissions
-RUN mkdir -p /app/data && \
-    chown -R appuser:appuser /app
+# Create /storage directory for persistent state (Once convention)
+RUN mkdir -p /storage && \
+    chown -R appuser:appuser /app /storage
 
 # Switch to non-root user
 USER appuser
 
-# Use volume for persistent state
-VOLUME ["/app/data"]
+# Once expects persistent data in /storage
+VOLUME ["/storage"]
+
+# Once expects HTTP on port 80
+EXPOSE 80
+
+# Healthcheck via the /up endpoint
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node -e "fetch('http://localhost/up').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
 
 CMD ["node", "app.js"]

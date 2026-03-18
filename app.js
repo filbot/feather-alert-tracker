@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 import fs from 'fs/promises';
-import path from 'path';
+import http from 'http';
 
 const BEARER_TOKEN = process.env.X_BEARER_TOKEN;
 const USER_ID = process.env.USER_ID;
@@ -29,8 +29,10 @@ const ACTIVE_MINUTES_PER_MONTH = POLLING_WINDOW_HOURS * 60 * WEEKDAYS_PER_MONTH;
 const ALLOWED_POLLS_PER_30_DAYS = 100;
 const MINUTES_BETWEEN_POLLS = Math.ceil(ACTIVE_MINUTES_PER_MONTH / ALLOWED_POLLS_PER_30_DAYS);
 
-// State tracking file
-const STATE_FILE = path.join(process.cwd(), '.tracker-state.json');
+// State tracking file (Once uses /storage for persistent data)
+const STATE_FILE = process.env.STATE_DIR
+  ? `${process.env.STATE_DIR}/.tracker-state.json`
+  : '/storage/.tracker-state.json';
 
 console.log(`[CONFIG] Poll window: ${POLLING_START_HOUR}:00 to ${POLLING_END_HOUR}:00 (weekdays only)`);
 console.log(`[CONFIG] Minutes between polls: ${MINUTES_BETWEEN_POLLS}`);
@@ -218,6 +220,24 @@ function scheduleNextPoll() {
     console.log(`[${now.toLocaleString()}] Waiting ${h}h ${m}m until next polling window (${next.toLocaleString()}).`);
   }
 }
+
+// ======== Healthcheck Server (Once requires /up on port 80) ========
+
+const PORT = process.env.PORT || 80;
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/up') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok' }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`[STARTUP] Healthcheck server listening on port ${PORT}`);
+});
 
 // ======== Start Polling ========
 
